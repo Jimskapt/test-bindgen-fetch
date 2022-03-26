@@ -1,0 +1,65 @@
+[package]
+name = "test-bindgen-fetch"
+version = "0.1.0"
+authors = ["Jimskapt <rami.programmer@gmail.com>"]
+edition = "2018"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = ["console_error_panic_hook"]
+
+[dependencies]
+wasm-bindgen = { version = "0.2.79", features = ["serde-serialize"]  }
+js-sys = "0.3.56"
+wasm-bindgen-futures = "0.4.29"
+serde = { version = "1.0.80", features = ["derive"] }
+serde_derive = "^1.0.59"
+pct-str = "1.1.0"
+regex = "1.5.4"
+lazy_static = "1.4.0"
+
+# La crate `console_error_panic_hook` permet d'améliorer le débogage des panic
+# en les affichant avec `console.error`. C'est très utile pour le
+# développement, mais il nécessite toute l'infrastructure de `std::fmt` et de
+# `std::panicking`, donc ce n'est pas très optimisé pour la taille du code
+# lorsque nous déployons.
+console_error_panic_hook = { version = "0.1.1", optional = true }
+
+# `wee_alloc` est un petit allocateur pour le wasm qui fait pèse ~1K dans le
+# code compilé, comparé aux ~10K de l'allocateur par défaut. Il est cependant
+# plus lent que l'allocateur par défaut.
+#
+# Malheureusement, `wee_alloc` nécessite Rust nightly lorsqu'il cible wasm,
+# pour l'instant.
+wee_alloc = { version = "0.4.2", optional = true }
+
+[dependencies.web-sys]
+version = "0.3.4"
+features = [
+  'Headers',
+  'Request',
+  'RequestInit',
+  'RequestMode',
+  'Response',
+  'Window',
+  'Document',
+  'HtmlElement',
+  'Element',
+  'Node',
+  'Location',
+  'console',
+  'ReadableStream',
+  'ReadableStreamDefaultReader',
+  'ReadableStreamDefaultReadResult',
+  'CssStyleDeclaration',
+]
+
+[dev-dependencies]
+wasm-bindgen-test = "0.2"
+
+[profile.release]
+# Règle `rustc` pour optimiser la compilation pour que le fichier soit le plus
+# compacte possible :
+opt-level = "s"
