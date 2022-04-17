@@ -80,6 +80,13 @@ pub async fn run(
 				status_block.inner_html()
 			));
 
+			// hide token from URL
+			window
+				.history()
+				.unwrap()
+				.replace_state_with_url(&String::new().into(), "test", Some("/"))
+				.unwrap();
+
 			let buttons = document.create_element("p")?;
 			let buttons = buttons.dyn_ref::<web_sys::HtmlElement>().unwrap();
 
@@ -87,56 +94,28 @@ pub async fn run(
 			let path = webfinger.links[0].href.clone();
 			let counter_path = format!("{path}/experimental_counter/counter");
 
-			let value = {
-				let mut opts = RequestInit::new();
-				opts.method("GET");
-				opts.mode(RequestMode::Cors);
+			let value = fetch_value(&counter_path, &access_token).await;
 
-				status_block.set_inner_html(&format!(
-					"{}fetch {counter_path} ... ",
-					status_block.inner_html()
-				));
-
-				let request = Request::new_with_str_and_init(&counter_path, &opts)?;
-				request
-					.headers()
-					.set("Authorization", &format!("Bearer {access_token}"))?;
-
-				let resp_value = JsFuture::from(window.fetch_with_request(&request)).await?;
-
-				status_block.set_inner_html(&format!("{}done\n", status_block.inner_html()));
-
-				let resp: Response = resp_value.dyn_into().unwrap();
-
-				std::sync::Arc::new(std::sync::Mutex::new(if resp.ok() {
-					let body = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
-					let body_for_callback = body.clone();
-					JsFuture::from(resp.text().unwrap().then(&Closure::wrap(Box::new(move |res: JsValue| {
-						*body_for_callback.lock().unwrap() = res.as_string().unwrap();
-					}) as Box<dyn FnMut(JsValue)>))).await?;
-					let body = body.lock().unwrap();
-					body.parse::<isize>().unwrap()
-				} else {
+			let value = match value {
+				Ok(value) => value,
+				Err(err) => {
 					status_block.set_inner_html(&format!(
-						"{}value does not exists yet in database\n",
-						status_block.inner_html()
+						"{}{}\n",
+						status_block.inner_html(),
+						err.as_string().unwrap_or_default(),
 					));
-					0isize
-				}))
+
+					isize::default()
+				}
 			};
 
 			let value_display = document.create_element("span")?;
 			value_display.set_attribute("id", "value_display")?;
-			value_display.set_inner_html(&format!("&nbsp;{}&nbsp;", value.lock().unwrap()));
+			value_display.set_inner_html(&format!("&nbsp;{}&nbsp;", value));
 
 			let sub = document.create_element("button")?;
 			sub.set_inner_html("-");
-			let sub_value = Closure::wrap(value_trigger(
-				value.clone(),
-				-1,
-				counter_path.clone(),
-				access_token.clone(),
-			));
+			let sub_value = value_trigger(-1, counter_path.clone(), access_token.clone());
 			let sub = sub.dyn_ref::<web_sys::HtmlElement>().unwrap();
 			sub.set_onclick(Some(sub_value.as_ref().unchecked_ref()));
 			sub_value.forget();
@@ -146,12 +125,7 @@ pub async fn run(
 
 			let add = document.create_element("button")?;
 			add.set_inner_html("+");
-			let add_value = Closure::wrap(value_trigger(
-				value.clone(),
-				1,
-				counter_path.clone(),
-				access_token.clone(),
-			));
+			let add_value = value_trigger(1, counter_path.clone(), access_token.clone());
 			let add = add.dyn_ref::<web_sys::HtmlElement>().unwrap();
 			add.set_onclick(Some(add_value.as_ref().unchecked_ref()));
 			add_value.forget();
@@ -251,39 +225,89 @@ struct Link {
 	properties: std::collections::HashMap<String, Option<String>>,
 }
 
+async fn fetch_value(counter_path: &str, access_token: &str) -> Result<isize, JsValue> {
+	let mut opts = RequestInit::new();
+	opts.method("GET");
+	opts.mode(RequestMode::Cors);
+
+	let window = web_sys::window().unwrap();
+	let document = window.document().expect("document not found");
+	let status_block = document.get_element_by_id("status_block").unwrap();
+
+	status_block.set_inner_html(&format!(
+		"{}fetch {counter_path} ... ",
+		status_block.inner_html()
+	));
+
+	let request = Request::new_with_str_and_init(&counter_path, &opts)?;
+	request
+		.headers()
+		.set("Authorization", &format!("Bearer {access_token}"))?;
+
+	let resp_value = JsFuture::from(window.fetch_with_request(&request)).await?;
+
+	status_block.set_inner_html(&format!("{}done\n", status_block.inner_html()));
+
+	let resp: Response = resp_value.dyn_into().unwrap();
+
+	if resp.ok() {
+		let body = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+
+		let body_for_callback = body.clone();
+		JsFuture::from(
+			resp.text()
+				.unwrap()
+				.then(&Closure::wrap(Box::new(move |res: JsValue| {
+					*body_for_callback.lock().unwrap() = res.as_string().unwrap();
+				}) as Box<dyn FnMut(JsValue)>)),
+		)
+		.await?;
+
+		let body = body.lock().unwrap();
+
+		Ok(body.parse::<isize>().unwrap())
+	} else if resp.status() == 404 {
+		status_block.set_inner_html(&format!(
+			"{}value does not exists yet in database\n",
+			status_block.inner_html()
+		));
+
+		Ok(0isize)
+	} else {
+		Err(format!("error {} when access to database\n", resp.status(),).into())
+	}
+}
+
 fn value_trigger(
-	value: std::sync::Arc<std::sync::Mutex<isize>>,
 	increment: i8,
 	counter_path: impl Into<String>,
 	access_token: impl Into<String>,
-) -> Box<dyn FnMut()> {
+) -> Closure<dyn FnMut()> {
 	let counter_path = counter_path.into();
 	let access_token = access_token.into();
 
-	Box::new(move || {
-		let mut val = value.lock().unwrap();
-		*val = *val + 1 * increment as isize;
+	Closure::wrap(Box::new(move || {
+		let window = web_sys::window().unwrap();
+		let document = window.document().expect("document not found");
 
-		let status_block = web_sys::window()
-			.unwrap()
-			.document()
-			.expect("document not found")
-			.get_element_by_id("status_block")
-			.unwrap();
+		let val: String = document
+			.get_element_by_id("value_display")
+			.unwrap_or_else(|| {
+				let res = document.create_element("span").unwrap();
+				res.set_inner_html("&nbsp;0&nbsp;");
+				res
+			})
+			.text_content()
+			.unwrap_or_else(|| String::from("0"));
+		let val = val.trim().parse::<isize>().unwrap_or_default() + 1 * increment as isize;
+
+		let status_block = document.get_element_by_id("status_block").unwrap();
 
 		status_block.set_inner_html(&format!(
 			"{}new value : {}\n",
 			status_block.inner_html(),
 			val
 		));
-
-		web_sys::window()
-			.unwrap()
-			.document()
-			.expect("document not found")
-			.get_element_by_id("value_display")
-			.unwrap()
-			.set_inner_html(&format!("&nbsp;{}&nbsp;", val));
 
 		let mut opts = RequestInit::new();
 		opts.method("PUT");
@@ -300,10 +324,7 @@ fn value_trigger(
 			.headers()
 			.set("Authorization", &format!("Bearer {access_token}"))
 			.unwrap();
-		request
-			.headers()
-			.set("Content-Type", "text/plain")
-			.unwrap();
+		request.headers().set("Content-Type", "text/plain").unwrap();
 
 		/*let resp_value = JsFuture::from(window.fetch_with_request(&request)).await?;
 
@@ -313,11 +334,26 @@ fn value_trigger(
 
 		status_block.set_inner_html(&format!("{}{}\n", status_block.inner_html(), if resp.ok() { "OK" } else { "ERR" }));*/
 
-		web_sys::window().unwrap().fetch_with_request(&request);
-		status_block.set_inner_html(&format!("{}done\n", status_block.inner_html()));
+		let save = window.fetch_with_request(&request);
+		let document_save_callback = document.clone();
+		let save_callback = Closure::wrap(Box::new(move |_: JsValue| {
+			let status_block = document_save_callback
+				.get_element_by_id("status_block")
+				.unwrap();
+
+			status_block.set_inner_html(&format!("{}done\n", status_block.inner_html()));
+
+			// TODO : wrong place to do this :
+			document
+				.get_element_by_id("value_display")
+				.unwrap()
+				.set_inner_html(&format!("&nbsp;{}&nbsp;", val));
+		}) as Box<dyn FnMut(JsValue)>);
+		save.then(&save_callback);
+		save_callback.forget();
 
 		web_sys::console::log_1(&format!("new value : {}", val).into());
-	})
+	}))
 }
 
 async fn fetch_webfinger_content(

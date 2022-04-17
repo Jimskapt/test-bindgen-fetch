@@ -54,6 +54,7 @@ features = [
   'ReadableStreamDefaultReader',
   'ReadableStreamDefaultReadResult',
   'CssStyleDeclaration',
+  'History'
 ]
 
 [dev-dependencies]
