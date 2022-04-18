@@ -19,7 +19,7 @@ serde_derive = "^1.0.59"
 pct-str = "1.1.0"
 regex = "1.5.4"
 lazy_static = "1.4.0"
-percent-encoding = "2.1.0"
+http = "0.2.6"
 
 # La crate `console_error_panic_hook` permet d'améliorer le débogage des panic
 # en les affichant avec `console.error`. C'est très utile pour le
